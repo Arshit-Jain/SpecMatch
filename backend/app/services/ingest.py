@@ -54,7 +54,8 @@ def ingest_records(conn: sqlite3.Connection) -> int:
     now = datetime.now(timezone.utc).isoformat()
     conn.executemany(
         "INSERT INTO records (record_id, raw_text, category, unit, quantity, ingested_at)"
-        " VALUES (:record_id, :raw_text, :category, :unit, :quantity, :ingested_at)",
+        " SELECT :record_id, :raw_text, :category, :unit, :quantity, :ingested_at"
+        " WHERE NOT EXISTS (SELECT 1 FROM records WHERE record_id = :record_id)",
         [{**row, "ingested_at": now} for row in rows],
     )
     conn.commit()
