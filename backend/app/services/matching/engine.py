@@ -89,7 +89,7 @@ class LexicalMatchingEngine(MatchingEngine):
         """Read all source records from the database."""
         try:
             rows = self._conn.execute(
-                "SELECT DISTINCT record_id, raw_text, category, unit, quantity, ingested_at"
+                "SELECT record_id, raw_text, category, unit, quantity, ingested_at"
                 " FROM records ORDER BY id"
             ).fetchall()
         except sqlite3.Error as exc:
