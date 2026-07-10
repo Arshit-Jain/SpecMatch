@@ -1,9 +1,17 @@
-"""Match endpoints. Stubbed — completing them to the frozen contracts in
-models/schemas.py is Task 4."""
+"""Match endpoints (Task 4).
+
+Thin request/response layer over ``services.matches``: query persisted
+matches and record an auditable review decision. Logic and persistence live
+in the service; the router only wires HTTP <-> service and maps the service's
+domain errors to status codes.
+"""
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.db import get_conn
+from app.core.errors import InvalidReviewError, NotFoundError
 from app.models.schemas import MatchesResponse, MatchResult, ReviewRequest, Tier
+from app.services import matches as match_service
 
 router = APIRouter()
 
@@ -14,13 +22,24 @@ def list_matches(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> MatchesResponse:
-    # TODO(Task 4): return persisted MatchResults, filterable by tier,
-    # shaped as MatchesResponse per models/schemas.py.
-    raise HTTPException(status_code=501, detail="Not implemented (Task 4)")
+    conn = get_conn()
+    try:
+        total, items = match_service.list_matches(
+            conn, tier=tier, limit=limit, offset=offset
+        )
+    finally:
+        conn.close()
+    return MatchesResponse(total=total, items=items)
 
 
 @router.post("/matches/{record_id}/review", response_model=MatchResult)
 def review_match(record_id: str, body: ReviewRequest) -> MatchResult:
-    # TODO(Task 4): persist the review decision (auditable) and return the
-    # updated MatchResult per models/schemas.py.
-    raise HTTPException(status_code=501, detail="Not implemented (Task 4)")
+    conn = get_conn()
+    try:
+        return match_service.apply_review(conn, record_id, body)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidReviewError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
