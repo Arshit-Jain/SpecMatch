@@ -206,10 +206,22 @@ ABCs in `interfaces.py` (`CandidateRetriever`, `CandidateScorer`,
   querying (the Issue #3 fix — an unmapped sentinel returned an empty list).
   Any new filter needs the same sentinel handling and an empty-state
   (`{% else %}` in the loop).
-- The review panel (`/review`, stubbed) must show yellow/red queues with
-  counts, each record's source text + top candidates + per-signal breakdown,
-  and accept/override/reject actions that persist through the API and reflect
-  the persisted result.
+- The review panel is implemented in `routers/console.py`. `GET /review`
+  works the yellow/red queues (`REVIEW_TIERS`) — tier counts in the toolbar,
+  and per record the source text, top candidates, and per-signal score
+  breakdown. Green never reaches the panel: it auto-accepts and needs no
+  human. The default queue is yellow.
+- The `tier` query param selects the queue; an unknown or non-review value
+  (e.g. `green`) falls back to the default queue rather than 422-ing a
+  browsable URL — the same sentinel discipline as the "All" gotcha above.
+- Accept/override/reject post to `POST /review` and persist through
+  `services.matches.apply_review` — the exact path the JSON API takes — so the
+  console and the API never diverge on review semantics, and the queue
+  re-renders the persisted result. It is Post/Redirect/Get: a decision
+  `303`-redirects back to the queue so a refresh can't re-submit.
+- The urlencoded form is parsed with the stdlib (`urllib.parse`); the console
+  adds no dependency. Service→HTTP mapping mirrors the matches router —
+  `NotFoundError` → 404, `InvalidReviewError` → 400, unknown `action` → 422.
 
 ## Commits & tests
 
