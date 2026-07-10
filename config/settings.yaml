@@ -7,9 +7,10 @@ matching:
   # Relative weights of the scoring signals; the engine combines them into
   # a composite confidence score in [0, 1].
   weights:
-    string_similarity: 0.60
-    category_agreement: 0.25
-    unit_compatibility: 0.15
+    string_similarity: 0.45
+    category_agreement: 0.20
+    unit_compatibility: 0.10
+    attribute_match: 0.25
 
 tiers:
   # Both thresholds are inclusive lower bounds:
