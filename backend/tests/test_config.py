@@ -8,5 +8,6 @@ def test_settings_load_from_yaml():
         "string_similarity",
         "category_agreement",
         "unit_compatibility",
+        "attribute_match",
     }
     assert 0.0 < settings.tiers.review_min < settings.tiers.accept_min < 1.0
