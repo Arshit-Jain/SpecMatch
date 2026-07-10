@@ -1,6 +1,5 @@
 """Tests for the scoring module."""
 
-import pytest
 from datetime import datetime, timezone
 
 from app.models.schemas import CatalogEntry, RecordOut

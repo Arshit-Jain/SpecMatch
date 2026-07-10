@@ -15,13 +15,12 @@ Design constraints (from interfaces.py):
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 
 from app.config import get_settings
-from app.core.db import get_conn, init_schema
+from app.core.db import get_conn
 from app.core.errors import DependencyError
 from app.core.logging import log_event
 from app.models.schemas import (

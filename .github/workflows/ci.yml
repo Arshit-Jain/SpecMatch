@@ -20,8 +20,17 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: |
+          pip install -r backend/requirements.txt
+          pip install flake8
+
+      - name: Run lint
+        working-directory: backend
+        run: flake8 app tests
 
       - name: Run tests
         working-directory: backend
         run: pytest
+
+      - name: Docker build check
+        run: docker compose build

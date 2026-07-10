@@ -1,7 +1,5 @@
 """Tests for the candidate retrieval module."""
 
-import pytest
-
 from app.models.schemas import CatalogEntry, RecordOut
 from app.services.matching.retrieval import LexicalRetriever
 from datetime import datetime, timezone

@@ -1,7 +1,5 @@
 """Tests for the normalization module."""
 
-import pytest
-
 from app.services.matching.normalize import normalize_text
 
 
