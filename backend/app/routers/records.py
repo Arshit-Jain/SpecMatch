@@ -1,9 +1,15 @@
+import logging
+import sqlite3
+
 from fastapi import APIRouter, Query
 
 from app.core.db import get_conn
+from app.core.errors import DependencyError
+from app.core.logging import log_event
 from app.models.schemas import RecordOut, RecordsResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/records", response_model=RecordsResponse)
@@ -13,12 +19,23 @@ def list_records(
 ) -> RecordsResponse:
     conn = get_conn()
     try:
-        total = conn.execute("SELECT COUNT(*) AS n FROM records").fetchone()["n"]
-        rows = conn.execute(
-            "SELECT record_id, raw_text, category, unit, quantity, ingested_at"
-            " FROM records ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        try:
+            total = conn.execute("SELECT COUNT(*) AS n FROM records").fetchone()["n"]
+            rows = conn.execute(
+                "SELECT record_id, raw_text, category, unit, quantity, ingested_at"
+                " FROM records ORDER BY id LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "dependency_failure",
+                dependency="sqlite",
+                operation="list_records",
+                error=str(exc),
+            )
+            raise DependencyError("could not query records from database") from exc
     finally:
         conn.close()
     items = [

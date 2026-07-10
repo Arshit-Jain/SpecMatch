@@ -40,25 +40,47 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 def ingest_catalog(conn: sqlite3.Connection) -> int:
     rows = _read_csv(CATALOG_CSV)
-    conn.executemany(
-        "INSERT OR REPLACE INTO catalog (catalog_id, description, category, unit)"
-        " VALUES (:catalog_id, :description, :category, :unit)",
-        rows,
-    )
-    conn.commit()
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO catalog (catalog_id, description, category, unit)"
+            " VALUES (:catalog_id, :description, :category, :unit)",
+            rows,
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dependency_failure",
+            dependency="sqlite",
+            operation="ingest_catalog",
+            error=str(exc),
+        )
+        raise DependencyError("could not ingest catalog into database") from exc
     return len(rows)
 
 
 def ingest_records(conn: sqlite3.Connection) -> int:
     rows = _read_csv(SOURCE_CSV)
     now = datetime.now(timezone.utc).isoformat()
-    conn.executemany(
-        "INSERT INTO records (record_id, raw_text, category, unit, quantity, ingested_at)"
-        " SELECT :record_id, :raw_text, :category, :unit, :quantity, :ingested_at"
-        " WHERE NOT EXISTS (SELECT 1 FROM records WHERE record_id = :record_id)",
-        [{**row, "ingested_at": now} for row in rows],
-    )
-    conn.commit()
+    try:
+        conn.executemany(
+            "INSERT INTO records (record_id, raw_text, category, unit, quantity, ingested_at)"
+            " SELECT :record_id, :raw_text, :category, :unit, :quantity, :ingested_at"
+            " WHERE NOT EXISTS (SELECT 1 FROM records WHERE record_id = :record_id)",
+            [{**row, "ingested_at": now} for row in rows],
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dependency_failure",
+            dependency="sqlite",
+            operation="ingest_records",
+            error=str(exc),
+        )
+        raise DependencyError("could not ingest records into database") from exc
     return len(rows)
 
 
@@ -67,7 +89,18 @@ def run_ingest(conn: sqlite3.Connection | None = None) -> None:
     if conn is None:
         conn = get_conn()
     try:
-        init_schema(conn)
+        try:
+            init_schema(conn)
+        except sqlite3.Error as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "dependency_failure",
+                dependency="sqlite",
+                operation="init_schema",
+                error=str(exc),
+            )
+            raise DependencyError("could not initialize database schema") from exc
         n_catalog = ingest_catalog(conn)
         n_records = ingest_records(conn)
         log_event(

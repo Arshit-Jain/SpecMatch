@@ -4,9 +4,15 @@ The database file lives under DATA_DIR (default: ./var inside the backend
 directory) so a mounted volume keeps data across container restarts.
 """
 
+import logging
 import os
 import sqlite3
 from pathlib import Path
+
+from app.core.errors import DependencyError
+from app.core.logging import log_event
+
+logger = logging.getLogger(__name__)
 
 
 def data_dir() -> Path:
@@ -54,5 +60,16 @@ CREATE TABLE IF NOT EXISTS matches (
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
-    conn.commit()
+    try:
+        conn.executescript(SCHEMA)
+        conn.commit()
+    except sqlite3.Error as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dependency_failure",
+            dependency="sqlite",
+            operation="init_schema",
+            error=str(exc),
+        )
+        raise DependencyError("could not initialize database schema") from exc

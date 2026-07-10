@@ -7,6 +7,8 @@ so the console and the API never diverge on review semantics.
 """
 
 from pathlib import Path
+import sqlite3
+import logging
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -14,11 +16,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.db import get_conn
-from app.core.errors import InvalidReviewError, NotFoundError
+from app.core.errors import DependencyError, InvalidReviewError, NotFoundError
+from app.core.logging import log_event
 from app.models.schemas import ReviewAction, ReviewRequest, Tier
 from app.services import matches as match_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=Path(__file__).resolve().parents[1] / "templates")
 
@@ -34,24 +38,35 @@ def record_table(request: Request, category: str | None = Query(default=None)):
 
     conn = get_conn()
     try:
-        categories = [
-            row["category"]
-            for row in conn.execute(
-                "SELECT DISTINCT category FROM records"
-                " WHERE category IS NOT NULL AND category != '' ORDER BY category"
-            ).fetchall()
-        ]
-        if category is not None:
-            rows = conn.execute(
-                "SELECT record_id, raw_text, category, unit, quantity FROM records"
-                " WHERE category = ? ORDER BY id",
-                (category,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT record_id, raw_text, category, unit, quantity FROM records"
-                " ORDER BY id"
-            ).fetchall()
+        try:
+            categories = [
+                row["category"]
+                for row in conn.execute(
+                    "SELECT DISTINCT category FROM records"
+                    " WHERE category IS NOT NULL AND category != '' ORDER BY category"
+                ).fetchall()
+            ]
+            if category is not None:
+                rows = conn.execute(
+                    "SELECT record_id, raw_text, category, unit, quantity FROM records"
+                    " WHERE category = ? ORDER BY id",
+                    (category,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT record_id, raw_text, category, unit, quantity FROM records"
+                    " ORDER BY id"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "dependency_failure",
+                dependency="sqlite",
+                operation="record_table",
+                error=str(exc),
+            )
+            raise DependencyError("could not query records for console table") from exc
     finally:
         conn.close()
     return templates.TemplateResponse(
