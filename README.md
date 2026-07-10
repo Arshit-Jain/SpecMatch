@@ -38,12 +38,20 @@ pytest
 ## Matching engine — retrieval & scoring design
 
 SpecMatch maps messy source records (`CONC RM 30MPa w/ 25% FA`) to clean catalog
-prose (`Ready-mix concrete, 30 MPa, 25% fly ash`). A raw character-level ratio fails
-because the two vocabularies barely overlap, so the engine is a **hybrid**:
-normalization + stdlib token-set similarity + structured category/unit/attribute
-signals. It uses **no third-party or ML dependency** — pure stdlib (`difflib`, `re`),
-which keeps the clean-clone Docker/CI build unbreakable. Everything sits behind the ABCs
-in `services/matching/interfaces.py`, so retrieval and scoring stay swappable.
+prose (`Ready-mix concrete, 30 MPa, 25% fly ash`). The two obvious approaches both
+fail here:
+
+- **A raw character-level ratio** fails because the two vocabularies barely overlap —
+  `CONC RM` shares almost no characters with `Ready-mix concrete`.
+- **A pure-LLM matcher** (150 records × ~800 catalog entries) is slow, costly, and
+  non-deterministic: it can hallucinate a match and it tiers differently run to run,
+  which a review console can't build on.
+
+So the engine is a **hybrid**: normalization + stdlib token-set similarity + structured
+category/unit/attribute signals. It uses **no third-party or ML dependency** — pure
+stdlib (`difflib`, `re`), which keeps the clean-clone Docker/CI build unbreakable and
+makes results **deterministic for a given `settings.yaml`**. Everything sits behind the
+ABCs in `services/matching/interfaces.py`, so retrieval and scoring stay swappable.
 
 ### 1. Normalization (`normalize.py`) — highest leverage
 
@@ -80,6 +88,25 @@ weighted average — missing data neither rewards nor punishes a candidate. The 
 signal is what keeps a `W460x60` beam from scoring high against `W150x22` just because the
 surrounding prose matches.
 
+**Attribute extractors.** `attribute_match` runs a suite of ~16 conservative regexes over
+the *normalized* (lowercased) text, then Jaccard-compares the two spec sets. Each pattern is
+deliberately narrow — a missed spec scores neutral, never a false match:
+
+| Spec | Example → extracted token |
+|---|---|
+| Concrete strength (MPa) | `30 MPa` / `30MPa` → `30mpa` |
+| Insulation R-value | `R-22` → `r-22` |
+| Wire gauge (AWG) | `#4/0 AWG` → `#4/0awg` |
+| HSS dimensions | `6x6x1/4` → `6x6x1/4` |
+| W-beam / channel | `W360X57` → `w360x57`, `C310X31` → `c310x31` |
+| Rebar size | `15M` → `15m` |
+| Grade (alphanumeric) | `Grade 400W` / `GR B` → `grade400w` / `gradeb` |
+| Lumber grade | `No.1/Btr` / `No. 2` → `no1/btr` / `no2` |
+| Facing | `unfaced` / `faced` |
+| Percentage / additive | `25%` → `25%`, `fly ash` → `flyash`, `slag` |
+| Dimensions / thickness | `50 mm` → `50mm`, `38x140` |
+| Type / schedule / air | `Type X` → `typex`, `Schedule 40` → `schedule40`, `air entrained` |
+
 ### 4. Tiering (`tiering.py`)
 
 The top candidate's score maps to a tier using **inclusive lower bounds** from
@@ -92,6 +119,31 @@ The top `top_k` (5) candidates per record are stored as a `MatchResult` (JSON in
 `matches` table). Each candidate carries its catalog id + description (*what* matched),
 composite `score`, and per-signal `signals` breakdown — enough for the console to explain
 *why* a record landed in its tier.
+
+### Hardening — what the fixtures exposed
+
+The attribute extractors are the fragile part, and four fixture pairs drove the current
+regexes. Each is a case where the composite score was *too high* until the spec was
+actually compared:
+
+- **Letter grades, on normalized text** (`STL HSS 10x6x1/2 GR B` vs a `Grade C` entry).
+  `_GRADE_RE` only caught numeric grades and ran on the *raw* text, so `GR B` was invisible
+  and the identical `10x6x1/2` dimensions scored a false green. Fix: capture alphanumeric
+  grades (`\bgrade\s+([a-z0-9]+)\b`) and extract from the **normalized** text, so `GR B` →
+  `grade b` is compared and the `B`-vs-`C` mismatch drops it to yellow.
+- **Lumber grades** (`LBR 38x184mm SPF No.1/Btr` vs `SPF No.2`). Dimensions matched but the
+  grade wasn't extracted, so the mismatch was invisible. Fix: `_LUMBER_GRADE_RE`
+  (`\bno\.?\s*(\d+(?:/btr)?)\b`) surfaces `no1/btr` vs `no2`.
+- **Insulation facing / subset inflation** (`BATT INSUL MW R-40 UNFACED` scored a false
+  `1.000` against the generic `…R-40` entry, which is a perfect string *subset*). Fix:
+  `_FACING_RE` extracts `unfaced`/`faced`, breaking the tie toward the correct entry.
+- **Case-sensitive dimension regexes** (`STL BM W460X60` vs `W150x22`). The beam/channel/rebar
+  patterns assumed uppercase but run *after* lowercasing, so they matched nothing, the
+  attribute signal went neutral, and string similarity alone let a wrong beam through. Fix:
+  `re.IGNORECASE` on `_WBEAM_RE` / `_CHANNEL_RE` / `_REBAR_SIZE_RE`.
+
+The throughline: **a missed spec must score neutral, and every attribute regex runs on the
+already-lowercased normalized text.** See `APPROACH.md` §5 for the full write-ups.
 
 ### Tier distribution (full fixture, default config)
 
