@@ -1,10 +1,78 @@
 {% extends "base.html" %}
 {% block title %}Review · SpecMatch{% endblock %}
 {% block content %}
-<h2>Review panel</h2>
-<p class="muted">
-  Not implemented yet (Task 5): work the yellow/red queues — tier counts,
-  top candidates with per-signal score breakdowns, and
-  accept / override / reject actions persisted through the API.
-</p>
+<div class="toolbar">
+  <form method="get" action="/review">
+    <label for="tier" class="muted">Queue</label>
+    <select id="tier" name="tier" onchange="this.form.submit()">
+      {% for t in review_tiers %}
+      <option value="{{ t }}" {% if selected_tier == t %}selected{% endif %}>{{ t|capitalize }} ({{ counts[t] }})</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+  <span class="muted">{{ items | length }} record(s) in the {{ selected_tier }} queue</span>
+</div>
+
+{% for r in items %}
+<section>
+  <h3><code>{{ r.record_id }}</code> · <code>{{ r.source_text }}</code></h3>
+
+  {% if r.review %}
+  <p class="muted">
+    Reviewed: <strong>{{ r.review.action.value }}</strong>
+    {% if r.review.catalog_id %}→ <code>{{ r.review.catalog_id }}</code>{% else %}(no selection){% endif %}
+    · {{ r.review.reviewed_at }}
+    {% if r.review.note %}· “{{ r.review.note }}”{% endif %}
+  </p>
+  {% endif %}
+
+  {% if r.candidates %}
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Candidate</th>
+        <th>Description</th>
+        <th>Score</th>
+        <th>Signal breakdown</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in r.candidates %}
+      <tr>
+        <td>{% if r.selected_catalog_id == c.catalog_id %}<span class="muted">✓</span>{% endif %}</td>
+        <td><code>{{ c.catalog_id }}</code></td>
+        <td>{{ c.description }}</td>
+        <td><code>{{ "%.3f"|format(c.score) }}</code></td>
+        <td class="muted">
+          {% for name, value in c.signals.items() %}<code>{{ name }}={{ "%.2f"|format(value) }}</code>{% if not loop.last %} · {% endif %}{% else %}<span>no scored signals</span>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No candidates — nothing to accept or override; reject only.</p>
+  {% endif %}
+
+  <form method="post" action="/review">
+    <input type="hidden" name="record_id" value="{{ r.record_id }}">
+    <input type="hidden" name="tier" value="{{ selected_tier }}">
+    {% if r.candidates %}
+    <button type="submit" name="action" value="accept">Accept top</button>
+    <label class="muted" for="override-{{ r.record_id }}">Override</label>
+    <select id="override-{{ r.record_id }}" name="catalog_id">
+      {% for c in r.candidates %}
+      <option value="{{ c.catalog_id }}">{{ c.catalog_id }} — {{ c.description }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" name="action" value="override">Apply override</button>
+    {% endif %}
+    <button type="submit" name="action" value="reject">Reject</button>
+  </form>
+</section>
+{% else %}
+<p class="muted">No records in the {{ selected_tier }} queue.</p>
+{% endfor %}
 {% endblock %}
