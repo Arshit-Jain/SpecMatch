@@ -10,6 +10,100 @@ console.
 design is documented below; see `APPROACH.md` for the full design narrative
 and `PLAN.md` for the build order.
 
+## System overview
+
+SpecMatch ingests two fixture CSVs at startup — 150 messy construction-material
+**source records** and 800 clean **catalog** entries — matches each record to
+catalog candidates, scores and tiers the matches (green / yellow / red), and
+serves them through a JSON API and a server-rendered review console.
+
+Routers stay thin (`routers/`) and delegate to `services/` where the business
+logic lives; `core/` provides shared infrastructure; `models/schemas.py` is the
+frozen contract every layer speaks.
+
+### End-to-end data flow
+
+```mermaid
+flowchart TD
+    CSV["Fixture CSVs<br/>catalog + source records"]
+    INGEST["Ingest service<br/>loads CSVs at startup"]
+    DB1[("SQLite<br/>records + catalog")]
+    ENGINE["Matching engine<br/>retrieve → score → tier"]
+    DB2[("SQLite<br/>matches")]
+    API["REST API + review console<br/>serve results & review"]
+
+    CSV --> INGEST --> DB1 --> ENGINE --> DB2 --> API
+```
+
+### Matching and tier assignment
+
+```mermaid
+flowchart TD
+    REC["Source record<br/>raw text + category hint"]
+    RETR["Retrieve candidates<br/>plausible catalog entries"]
+    SCORE["Score candidates<br/>string · category · unit signals"]
+    TIER{"Assign tier<br/>by composite score"}
+    GREEN["Green<br/>score ≥ 0.85 · auto-accept"]
+    YELLOW["Yellow<br/>0.60–0.85 · needs review"]
+    RED["Red<br/>score < 0.60 · no match"]
+    ACCEPT["Auto-accepted<br/>stored, no review"]
+    REVIEW["Human review<br/>accept / override / reject"]
+
+    REC --> RETR --> SCORE --> TIER
+    TIER --> GREEN
+    TIER --> YELLOW
+    TIER --> RED
+    GREEN --> ACCEPT
+    YELLOW --> REVIEW
+    RED --> REVIEW
+
+    classDef green fill:#eaf3de,stroke:#3b6d11,color:#173404;
+    classDef amber fill:#faeeda,stroke:#854f0b,color:#412402;
+    classDef red fill:#fcebeb,stroke:#a32d2d,color:#501313;
+    class GREEN green
+    class YELLOW amber
+    class RED red
+```
+
+### Data model
+
+Solid lines are physical SQLite tables; dotted lines are *soft* references —
+`catalog_id` lives inside the `matches.payload` JSON, not as a column.
+
+```mermaid
+erDiagram
+    records ||--o| matches : "record_id (1:0..1, no FK)"
+    matches ||--|| MATCH_RESULT : "payload (JSON, 1:1)"
+    MATCH_RESULT ||--o{ CANDIDATE : "candidates (top-k)"
+    MATCH_RESULT ||--o| REVIEW : "review (0..1)"
+    catalog ||..o{ CANDIDATE : "catalog_id in payload (soft)"
+    catalog ||..o{ MATCH_RESULT : "selected_catalog_id (soft, 1:N)"
+
+    records {
+        INTEGER id PK "AUTOINCREMENT"
+        TEXT record_id "NOT NULL; not unique"
+        TEXT raw_text "NOT NULL"
+        TEXT category "nullable"
+        TEXT unit "nullable"
+        TEXT quantity "nullable"
+        TEXT ingested_at "NOT NULL; ISO-8601"
+    }
+    catalog {
+        TEXT catalog_id PK
+        TEXT description "NOT NULL"
+        TEXT category "NOT NULL"
+        TEXT unit "NOT NULL"
+    }
+    matches {
+        TEXT record_id PK
+        TEXT payload "NOT NULL; JSON MatchResult"
+        TEXT tier "NOT NULL; green/yellow/red"
+        TEXT matched_at "NOT NULL; ISO-8601"
+    }
+```
+
+See `ARCHITECTURE_NOTES.md` for the full module-by-module walkthrough.
+
 ## Quick start (Docker)
 
 ```bash
@@ -19,21 +113,93 @@ docker compose up --build
 
 API and console: http://localhost:8000 (console at `/`, API docs at `/docs`).
 
-## Local development
-
-```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
 ## Tests
 
 ```bash
 cd backend
 pytest
 ```
+
+## API reference
+
+All endpoints return JSON except the review console (`/` and `/review`), which
+render HTML. Interactive docs are at http://localhost:8000/docs.
+
+### `GET /health`
+
+Returns service status and match counts by tier.
+
+**Response** (`HealthResponse`):
+
+```json
+{
+  "status": "ok",
+  "records": 150,
+  "matched": 150,
+  "tiers": { "green": 114, "yellow": 25, "red": 11 }
+}
+```
+
+### `GET /records`
+
+Lists ingested source records (pre-existing endpoint; unchanged).
+
+| Query param | Default | Notes |
+|---|---|---|
+| `limit` | `50` | `1`–`500` |
+| `offset` | `0` | Page offset |
+
+**Response** (`RecordsResponse`): `{ "total": <int>, "items": [ RecordOut ] }`
+
+### `GET /matches`
+
+Returns persisted match results, optionally filtered by tier. Ordered by
+`record_id` (ingestion order). `total` is the count under the same filter,
+not the page length.
+
+| Query param | Default | Notes |
+|---|---|---|
+| `tier` | — | `green`, `yellow`, or `red`; omit for all tiers |
+| `limit` | `50` | `1`–`500` |
+| `offset` | `0` | Page offset |
+
+**Response** (`MatchesResponse`): `{ "total": <int>, "items": [ MatchResult ] }`
+
+Each `MatchResult` carries `record_id`, `source_text`, `tier`, `candidates`
+(top-k with `catalog_id`, `description`, `score`, `signals`), optional
+`selected_catalog_id`, optional `review`, and `matched_at`.
+
+### `POST /matches/{record_id}/review`
+
+Records an auditable human review decision. Returns the updated `MatchResult`
+with a persisted `review` block (`action`, `catalog_id`, `note`, `reviewed_at`).
+
+**Path:** `record_id` — e.g. `SRC-0002`
+
+**Body** (`ReviewRequest`):
+
+| `action` | Required fields | Effect |
+|---|---|---|
+| `accept` | — | Selects the top candidate |
+| `override` | `catalog_id` (must be one of the record's candidates) | Selects that candidate; `note` optional |
+| `reject` | — | Clears `selected_catalog_id`; `note` optional |
+
+**Response:** updated `MatchResult` with `review` populated.
+
+| Status | When |
+|---|---|
+| `200` | Decision persisted; body is the updated `MatchResult` |
+| `400` | Invalid review (e.g. override without `catalog_id`, or `catalog_id` not in the record's candidates) |
+| `404` | Unknown `record_id` |
+| `422` | Malformed body (e.g. unknown `action`) |
+
+### Review console
+
+| URL | Purpose |
+|---|---|
+| `GET /` | Record table with category filter |
+| `GET /review?tier=yellow` | Yellow/red review queues with per-signal breakdown |
+| `POST /review` | Accept / override / reject (redirects back to queue) |
 
 ## Matching engine — retrieval & scoring design
 
@@ -178,17 +344,69 @@ a different category would be filtered out. This trades a little recall for prec
 speed, which is acceptable when source categories are trustworthy; records without a
 category fall back to full-catalog scoring, where the signal goes neutral.
 
+## Issue fixes
+
+Each issue was reproduced with a failing test committed before the fix.
+
+### Issue #1 — Duplicate records after re-ingest
+
+**Symptom:** Running ingest a second time doubled the record count (150 → 300).
+
+**Cause:** `ingest_records()` used a plain `INSERT` on every row. The `records`
+table has no unique constraint on `record_id` (only the autoincrement `id` is
+the PK), so re-ingest silently appended duplicates.
+
+**Fix:** Changed to `INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM records
+WHERE record_id = :record_id)` — idempotent re-ingest without schema changes.
+Catalog and matches already used `INSERT OR REPLACE`; records deliberately
+keeps the asymmetry because `record_id` is not unique by design.
+
+### Issue #2 — Wrong tier at a threshold boundary
+
+**Symptom:** A match scoring exactly `0.85` landed in yellow instead of green.
+
+**Cause:** `assign_tier()` used a strict `>` for the accept boundary
+(`score > accept_min`) while `settings.yaml`, `config.py`, and the function's
+own docstring all describe an *inclusive* lower bound (`score >= accept_min`).
+The review boundary already used `>=`, so the two sides were inconsistent.
+
+**Fix:** Changed `>` to `>=` in `tiering.py`. A score of exactly `0.85` is now
+green; exactly `0.60` remains yellow.
+
+### Issue #3 — Empty list after "All categories" filter
+
+**Symptom:** Selecting "All categories" in the record table showed "No records."
+
+**Cause:** The category `<select>` submits the literal string `"All"` for the
+no-filter option, but `record_table()` passed that string straight into
+`WHERE category = ?` — no row has `category = 'All'`, so the query returned
+nothing.
+
+**Fix:** Map the sentinel before querying: `if category == "All": category = None`,
+mirroring the pattern the assessment calls out for any new filter.
+
+## Deviations from `PLAN.md`
+
+| Planned | Actual | Why |
+|---|---|---|
+| Three scoring signals in starter config | Four signals — added `attribute_match` weight to `settings.yaml` | Fixture pairs differed only on extracted specs (grade, facing, beam size); string similarity alone over-trusted prose |
+| Optional ML/embeddings stretch | Not built | Lexical core needed more hardening (regex edge cases) than the optional stretch justified |
+| Neutral signal for missing attributes | Missing catalog spec now penalises the match | A record matching on everything *except* grade should be yellow, not auto-green — catalog entries often differ only by grade |
+| Task 5 polish trimmable if over budget | Console built to full spec | Engine finished on schedule; no polish was sacrificed |
+| Docs finalized at submission | Added `APPROACH.md` | Added a separate design narrative to make the matching approach easier to understand |
+
 ## Layout
 
 ```
 backend/app/            FastAPI application
   models/schemas.py     API contracts — FROZEN, do not modify
-  routers/              health & records implemented; matches stubbed
+  routers/              health, records, matches, console
   services/ingest.py    CSV ingest (runs at startup)
+  services/matches.py   match queries and review persistence
   services/matching/    hybrid matching engine (normalize → retrieve → score → tier)
-  templates/            record table implemented; review panel stubbed
+  templates/            record table + review panel (Jinja2)
   core/                 logging, errors, storage
-backend/tests/          existing tests — pass on a clean clone
+backend/tests/          engine, API, console, and issue-reproduction tests
 config/settings.yaml    tier thresholds & scoring weights
 data/                   fixture CSVs (~150 source records, ~800 catalog entries)
 ```
