@@ -167,11 +167,30 @@ ABCs in `interfaces.py` (`CandidateRetriever`, `CandidateScorer`,
 - Routers stay thin: request/response handling and validation only; all logic
   in `services/`. Type-annotate signatures and use FastAPI `Query(...)`
   validators as `records.py` does.
-- `/matches` and `/matches/{record_id}/review` are currently `501` stubs.
-  Complete them to the frozen shapes. Review decisions must be **persisted and
-  auditable** — store the `Review` (`action`, `catalog_id`, `note`,
-  `reviewed_at`) on the record's `MatchResult` and return the updated result.
-- Leave `/records` behaviour intact (Issue #1 aside).
+- The read/review side of the matches table lives in `services/matches.py`,
+  the complement to `services/matching/engine.py`: the engine **writes** each
+  record's initial `MatchResult`; `matches.py` **reads** them (`list_matches`,
+  `get_match`) and applies review decisions (`apply_review`). Keep that split —
+  don't fold query/review logic into the matching engine.
+- `/matches` orders by `record_id` (ids are zero-padded and unique, so this is
+  ingestion order and deterministic *without* joining the non-unique
+  `records.record_id`). `total` is the count under the same tier filter, not
+  the page length. The `tier` query param is the `Tier` enum, so an unknown
+  tier is a 422 for free.
+- Review decisions are **persisted and auditable**: store the `Review`
+  (`action`, resolved `catalog_id`, `note`, `reviewed_at`) on the record's
+  `MatchResult`, log a `review_persisted` event (`record_id`, `action`,
+  `catalog_id`, `tier`), and return the updated result. Only `payload` is
+  rewritten — `tier` and `matched_at` stay as the engine recorded them, so
+  tier-filtered queries keep reflecting the *match*, not the review.
+- Review semantics (`_resolve_selection`): **accept** selects the top
+  candidate; **override** requires `catalog_id` and it must be one of the
+  record's own candidates; **reject** clears `selected_catalog_id`. In all
+  three, `review.catalog_id` mirrors the resolved `selected_catalog_id`.
+- Service→HTTP error mapping is the router's only branching: `NotFoundError`
+  → 404, `InvalidReviewError` → 400 (both in `app.core.errors`); malformed
+  bodies (unknown `action`) are pydantic 422s. Services never import FastAPI.
+- Leave `/records` and `/health` behaviour intact (Issue #1 aside).
 
 ## Review console (Task 5)
 
