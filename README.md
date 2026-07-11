@@ -113,11 +113,39 @@ docker compose up --build
 
 API and console: http://localhost:8000 (console at `/`, API docs at `/docs`).
 
+Ingest and matching run once at startup; results are written to SQLite on the
+`specmatch-data` named volume (`DATA_DIR=/data`), so **data persists across
+`docker compose down`/`up` restarts** — re-ingest is idempotent (Issue #1) and
+does not duplicate records.
+
+## Local development (without Docker)
+
+**Use Python 3.11** to match the Docker image (`python:3.11-slim`) — same
+interpreter, same wheels, no dev/prod drift. 3.12 and 3.13 also work; the pinned
+deps (`pydantic==2.10.4`) ship prebuilt wheels for all three. Python 3.14+ has
+**no wheels yet** and falls back to a source build that fails (its Rust bridge,
+PyO3 0.22.6, supports only up to 3.13), so create the venv with an explicit
+supported interpreter, not a bare `python3` that may point at 3.14:
+
+```bash
+cd backend
+python3.11 -m venv venv && source venv/bin/activate   # or python3.12 / 3.13
+python --version                                       # confirm 3.11–3.13, NOT 3.14
+pip install -r requirements.txt
+uvicorn app.main:app --reload                          # http://localhost:8000
+```
+
+Don't have 3.11? `brew install python@3.11` (macOS) or `pyenv install 3.11`,
+then use that `python3.11`. Do **not** work around the build by editing
+`requirements.txt` — the pins are deliberate and CI installs from that exact
+file.
+
 ## Tests
 
 ```bash
 cd backend
-pytest
+pytest            # 169 tests: engine, API shape, console, issue reproductions
+flake8 app tests  # lint (also enforced in CI)
 ```
 
 ## API reference
@@ -128,6 +156,10 @@ render HTML. Interactive docs are at http://localhost:8000/docs.
 ### `GET /health`
 
 Returns service status and match counts by tier.
+
+```bash
+curl http://localhost:8000/health
+```
 
 **Response** (`HealthResponse`):
 
@@ -149,6 +181,10 @@ Lists ingested source records (pre-existing endpoint; unchanged).
 | `limit` | `50` | `1`–`500` |
 | `offset` | `0` | Page offset |
 
+```bash
+curl "http://localhost:8000/records?limit=5&offset=0"
+```
+
 **Response** (`RecordsResponse`): `{ "total": <int>, "items": [ RecordOut ] }`
 
 ### `GET /matches`
@@ -162,6 +198,14 @@ not the page length.
 | `tier` | — | `green`, `yellow`, or `red`; omit for all tiers |
 | `limit` | `50` | `1`–`500` |
 | `offset` | `0` | Page offset |
+
+```bash
+# all matches (first page)
+curl "http://localhost:8000/matches?limit=50&offset=0"
+
+# only the yellow review queue
+curl "http://localhost:8000/matches?tier=yellow"
+```
 
 **Response** (`MatchesResponse`): `{ "total": <int>, "items": [ MatchResult ] }`
 
@@ -183,6 +227,23 @@ with a persisted `review` block (`action`, `catalog_id`, `note`, `reviewed_at`).
 | `accept` | — | Selects the top candidate |
 | `override` | `catalog_id` (must be one of the record's candidates) | Selects that candidate; `note` optional |
 | `reject` | — | Clears `selected_catalog_id`; `note` optional |
+
+```bash
+# accept the top candidate
+curl -X POST http://localhost:8000/matches/SRC-0002/review \
+  -H "Content-Type: application/json" \
+  -d '{"action": "accept", "catalog_id": null, "note": null}'
+
+# override with a specific candidate the record already has
+curl -X POST http://localhost:8000/matches/SRC-0002/review \
+  -H "Content-Type: application/json" \
+  -d '{"action": "override", "catalog_id": "CAT-0015", "note": "correct grade"}'
+
+# reject — no acceptable match
+curl -X POST http://localhost:8000/matches/SRC-0002/review \
+  -H "Content-Type: application/json" \
+  -d '{"action": "reject", "catalog_id": null, "note": "not in catalog"}'
+```
 
 **Response:** updated `MatchResult` with `review` populated.
 

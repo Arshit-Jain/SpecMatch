@@ -7,3 +7,4 @@ backend/var/
 *.db
 
 CHECKLIST.md
+backend/venv/
